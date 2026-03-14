@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from typing_extensions import override
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
+from a2a.types import TaskState, TaskStatus, TaskStatusUpdateEvent
 from a2a.utils import new_agent_text_message
 
 from dharma_agent.skills.teach import handle_teach
 from dharma_agent.skills.reflect import handle_reflect
 from dharma_agent.skills.guide import handle_guide
+
+logger = logging.getLogger(__name__)
 
 
 # Keywords used for simple skill routing when no explicit skill ID is provided
@@ -62,6 +66,25 @@ class DharmaAgentExecutor(AgentExecutor):
         if self._client is None:
             print("  (no ANTHROPIC_API_KEY found — running in fallback mode)")
 
+    async def _enqueue_error(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+        message_text: str,
+    ) -> None:
+        """Enqueue a failed status event with a compassionate error message."""
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id or "",
+                context_id=context.context_id or "",
+                final=True,
+                status=TaskStatus(
+                    state=TaskState.failed,
+                    message=new_agent_text_message(message_text),
+                ),
+            )
+        )
+
     @override
     async def execute(
         self,
@@ -77,7 +100,25 @@ class DharmaAgentExecutor(AgentExecutor):
                     "all rooted in the Five Mindfulness Trainings."
                 )
             )
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    task_id=context.task_id or "",
+                    context_id=context.context_id or "",
+                    final=True,
+                    status=TaskStatus(state=TaskState.completed),
+                )
+            )
             return
+
+        # Signal that processing has started
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id or "",
+                context_id=context.context_id or "",
+                final=False,
+                status=TaskStatus(state=TaskState.working),
+            )
+        )
 
         # Route to the appropriate skill handler
         skill_id = _detect_skill(user_input)
@@ -88,9 +129,66 @@ class DharmaAgentExecutor(AgentExecutor):
             "guide": handle_guide,
         }
         handler = handlers[skill_id]
-        result = await handler(user_input, self._client)
+
+        try:
+            result = await handler(user_input, self._client)
+        except Exception as exc:
+            # Import anthropic only when we need to check error types
+            try:
+                import anthropic as _anthropic
+            except ImportError:
+                _anthropic = None
+
+            if _anthropic and isinstance(exc, _anthropic.APIConnectionError):
+                logger.exception("Failed to connect to Claude API")
+                await self._enqueue_error(
+                    context, event_queue,
+                    "I'm having trouble reaching my teacher right now. "
+                    "Please try again in a moment.",
+                )
+            elif _anthropic and isinstance(exc, _anthropic.RateLimitError):
+                logger.exception("Claude API rate limit reached")
+                await self._enqueue_error(
+                    context, event_queue,
+                    "I need a moment of rest — too many requests right now. "
+                    "Please try again shortly.",
+                )
+            elif _anthropic and isinstance(exc, _anthropic.AuthenticationError):
+                logger.exception("Claude API authentication failed")
+                await self._enqueue_error(
+                    context, event_queue,
+                    "There is a configuration issue preventing me from "
+                    "responding fully. The administrator may need to check "
+                    "the API key.",
+                )
+            elif _anthropic and isinstance(exc, _anthropic.APIError):
+                logger.exception("Claude API error: %s", exc)
+                await self._enqueue_error(
+                    context, event_queue,
+                    "Something unexpected happened while I was reflecting. "
+                    "Please try again.",
+                )
+            else:
+                logger.exception("Unexpected error in skill handler: %s", exc)
+                await self._enqueue_error(
+                    context, event_queue,
+                    "I encountered an unexpected difficulty. "
+                    "Please try again, and if this persists, "
+                    "let the administrator know.",
+                )
+            return
 
         await event_queue.enqueue_event(new_agent_text_message(result))
+
+        # Signal completion
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id or "",
+                context_id=context.context_id or "",
+                final=True,
+                status=TaskStatus(state=TaskState.completed),
+            )
+        )
 
     @override
     async def cancel(
@@ -98,4 +196,17 @@ class DharmaAgentExecutor(AgentExecutor):
         context: RequestContext,
         event_queue: EventQueue,
     ) -> None:
-        raise Exception("cancel not supported")
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id or "",
+                context_id=context.context_id or "",
+                final=True,
+                status=TaskStatus(
+                    state=TaskState.canceled,
+                    message=new_agent_text_message(
+                        "This task has been canceled. "
+                        "I am here whenever you are ready."
+                    ),
+                ),
+            )
+        )

@@ -65,6 +65,6 @@ def build_agent_card(host: str = "0.0.0.0", port: int = 9999) -> AgentCard:
         version="0.1.0",
         defaultInputModes=["text"],
         defaultOutputModes=["text"],
-        capabilities=AgentCapabilities(),
+        capabilities=AgentCapabilities(streaming=True),
         skills=[teach_skill, reflect_skill, guide_skill],
     )
