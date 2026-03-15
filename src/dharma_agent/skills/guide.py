@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from dharma_agent.conversation import Turn, build_messages
 from dharma_agent.trainings import ALL_TRAININGS_TEXT, SYSTEM_PROMPT
 
 if TYPE_CHECKING:
@@ -39,7 +40,9 @@ you choose, may it come from a place of compassion and clarity."""
 
 
 async def handle_guide(
-    user_message: str, client: anthropic.AsyncAnthropic | None
+    user_message: str,
+    client: anthropic.AsyncAnthropic | None,
+    history: list[Turn] | None = None,
 ) -> str:
     """Offer mindful guidance on a proposed action."""
     if client is None:
@@ -49,6 +52,6 @@ async def handle_guide(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         system=f"{SYSTEM_PROMPT}\n\n{GUIDE_INSTRUCTION}",
-        messages=[{"role": "user", "content": user_message}],
+        messages=build_messages(history, user_message),
     )
     return response.content[0].text

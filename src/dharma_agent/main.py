@@ -7,6 +7,7 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 
 from dharma_agent.agent_card import build_agent_card
+from dharma_agent.conversation import InMemoryConversationStore
 from dharma_agent.executor import DharmaAgentExecutor
 
 
@@ -19,8 +20,9 @@ def main() -> None:
 
     agent_card = build_agent_card(host=HOST, port=PORT)
 
+    store = InMemoryConversationStore()
     request_handler = DefaultRequestHandler(
-        agent_executor=DharmaAgentExecutor(),
+        agent_executor=DharmaAgentExecutor(store=store),
         task_store=InMemoryTaskStore(),
     )
 

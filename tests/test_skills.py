@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from dharma_agent.conversation import Turn
 from dharma_agent.skills.teach import handle_teach, _fallback_teach
 from dharma_agent.skills.reflect import handle_reflect
 from dharma_agent.skills.guide import handle_guide
@@ -98,3 +99,65 @@ class TestSkillsFallbackMode:
     async def test_guide_fallback(self):
         result = await handle_guide("Should I quit?", None)
         assert "trainings" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Skills with conversation history
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsWithHistory:
+    """Tests for skill handlers passing conversation history to Claude."""
+
+    @pytest.mark.asyncio
+    async def test_teach_passes_history_to_claude(self):
+        client = _mock_client("Follow-up teaching...")
+        history = [
+            Turn("user", "Tell me about the first training"),
+            Turn("assistant", "The first training is Reverence For Life..."),
+        ]
+        result = await handle_teach("How does that apply to anger?", client, history=history)
+        assert result == "Follow-up teaching..."
+
+        call_kwargs = client.messages.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        assert len(messages) == 3  # 2 history + 1 current
+        assert messages[0] == {"role": "user", "content": "Tell me about the first training"}
+        assert messages[1] == {"role": "assistant", "content": "The first training is Reverence For Life..."}
+        assert messages[2] == {"role": "user", "content": "How does that apply to anger?"}
+
+    @pytest.mark.asyncio
+    async def test_reflect_passes_history_to_claude(self):
+        client = _mock_client("Deeper reflection...")
+        history = [
+            Turn("user", "I feel angry"),
+            Turn("assistant", "I hear you..."),
+        ]
+        result = await handle_reflect("It keeps coming back", client, history=history)
+        assert result == "Deeper reflection..."
+
+        messages = client.messages.create.call_args.kwargs["messages"]
+        assert len(messages) == 3
+
+    @pytest.mark.asyncio
+    async def test_guide_passes_history_to_claude(self):
+        client = _mock_client("Further guidance...")
+        history = [
+            Turn("user", "Should I quit my job?"),
+            Turn("assistant", "Let's reflect on that..."),
+        ]
+        result = await handle_guide("But I'm so unhappy", client, history=history)
+        assert result == "Further guidance..."
+
+        messages = client.messages.create.call_args.kwargs["messages"]
+        assert len(messages) == 3
+
+    @pytest.mark.asyncio
+    async def test_no_history_sends_single_message(self):
+        client = _mock_client("Fresh response")
+        result = await handle_teach("What are the trainings?", client, history=None)
+        assert result == "Fresh response"
+
+        messages = client.messages.create.call_args.kwargs["messages"]
+        assert len(messages) == 1
+        assert messages[0] == {"role": "user", "content": "What are the trainings?"}

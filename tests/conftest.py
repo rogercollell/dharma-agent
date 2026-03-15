@@ -8,12 +8,22 @@ from a2a.server.events import EventQueue
 from a2a.types import Message, MessageSendParams, Part, Role, TextPart
 
 
-def make_request_context(text: str) -> RequestContext:
-    """Create a RequestContext from a plain text string."""
+def make_request_context(
+    text: str,
+    context_id: str | None = None,
+) -> RequestContext:
+    """Create a RequestContext from a plain text string.
+
+    Args:
+        text: The user message text.
+        context_id: Optional conversation session ID. If provided, allows
+            multiple requests to share the same conversation history.
+    """
     message = Message(
         role=Role.user,
         parts=[Part(root=TextPart(text=text))],
         messageId="test-msg-id",
+        context_id=context_id,
     )
     params = MessageSendParams(message=message)
     return RequestContext(request=params)

@@ -12,6 +12,11 @@ from a2a.server.events import EventQueue
 from a2a.types import TaskState, TaskStatus, TaskStatusUpdateEvent
 from a2a.utils import new_agent_text_message
 
+from dharma_agent.conversation import (
+    ConversationStore,
+    InMemoryConversationStore,
+    Turn,
+)
 from dharma_agent.skills.teach import handle_teach
 from dharma_agent.skills.reflect import handle_reflect
 from dharma_agent.skills.guide import handle_guide
@@ -61,8 +66,9 @@ def _build_client():
 class DharmaAgentExecutor(AgentExecutor):
     """Routes incoming A2A requests to the appropriate mindfulness skill."""
 
-    def __init__(self) -> None:
+    def __init__(self, store: ConversationStore | None = None) -> None:
         self._client = _build_client()
+        self._store = store or InMemoryConversationStore()
         if self._client is None:
             print("  (no ANTHROPIC_API_KEY found — running in fallback mode)")
 
@@ -92,6 +98,8 @@ class DharmaAgentExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         user_input = context.get_user_input()
+        session_id = context.context_id or ""
+
         if not user_input.strip():
             await event_queue.enqueue_event(
                 new_agent_text_message(
@@ -103,18 +111,22 @@ class DharmaAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=context.task_id or "",
-                    context_id=context.context_id or "",
+                    context_id=session_id,
                     final=True,
                     status=TaskStatus(state=TaskState.completed),
                 )
             )
             return
 
+        # Load conversation history and record the user's turn
+        history = await self._store.get_history(session_id)
+        await self._store.add_turn(session_id, Turn("user", user_input))
+
         # Signal that processing has started
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
                 task_id=context.task_id or "",
-                context_id=context.context_id or "",
+                context_id=session_id,
                 final=False,
                 status=TaskStatus(state=TaskState.working),
             )
@@ -131,7 +143,7 @@ class DharmaAgentExecutor(AgentExecutor):
         handler = handlers[skill_id]
 
         try:
-            result = await handler(user_input, self._client)
+            result = await handler(user_input, self._client, history=history)
         except Exception as exc:
             # Import anthropic only when we need to check error types
             try:
@@ -178,13 +190,16 @@ class DharmaAgentExecutor(AgentExecutor):
                 )
             return
 
+        # Record the assistant's response in conversation history
+        await self._store.add_turn(session_id, Turn("assistant", result))
+
         await event_queue.enqueue_event(new_agent_text_message(result))
 
         # Signal completion
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
                 task_id=context.task_id or "",
-                context_id=context.context_id or "",
+                context_id=session_id,
                 final=True,
                 status=TaskStatus(state=TaskState.completed),
             )

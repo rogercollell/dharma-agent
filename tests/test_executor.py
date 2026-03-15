@@ -1,12 +1,13 @@
-"""Tests for the Dharma Agent executor — routing, error handling, streaming."""
+"""Tests for the Dharma Agent executor — routing, error handling, streaming, memory."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 from a2a.server.events import EventQueue
 from a2a.types import Message, TaskStatusUpdateEvent, TaskState
 
+from dharma_agent.conversation import InMemoryConversationStore
 from dharma_agent.executor import _detect_skill, DharmaAgentExecutor
 from tests.conftest import make_request_context
 
@@ -42,10 +43,11 @@ class TestDetectSkill:
 # ---------------------------------------------------------------------------
 
 
-def _make_executor(client=None):
-    """Create executor without calling __init__, injecting client directly."""
+def _make_executor(client=None, store=None):
+    """Create executor without calling __init__, injecting client and store."""
     executor = DharmaAgentExecutor.__new__(DharmaAgentExecutor)
     executor._client = client
+    executor._store = store or InMemoryConversationStore()
     return executor
 
 
@@ -229,3 +231,84 @@ class TestExecutorCancel:
         assert event.status.state == TaskState.canceled
         assert event.final is True
         assert "canceled" in event.status.message.parts[0].root.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Conversation memory
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorMemory:
+    """Tests for conversation memory across messages."""
+
+    @pytest.mark.asyncio
+    async def test_second_message_has_history(self):
+        """Second message in the same session receives history from the first."""
+        store = InMemoryConversationStore()
+        executor = _make_executor(store=store)
+        session_id = "test-session-1"
+
+        # First message
+        ctx1 = make_request_context("Explain the first training", context_id=session_id)
+        queue1 = EventQueue()
+        await executor.execute(ctx1, queue1)
+
+        # Verify history was recorded (user turn + assistant turn)
+        history = await store.get_history(session_id)
+        assert len(history) == 2
+        assert history[0].role == "user"
+        assert history[0].content == "Explain the first training"
+        assert history[1].role == "assistant"
+        assert "Reverence For Life" in history[1].content
+
+        # Second message — should receive the history from message 1
+        ctx2 = make_request_context("How does that apply to anger?", context_id=session_id)
+        queue2 = EventQueue()
+
+        # Patch the reflect handler to capture the history argument
+        with patch("dharma_agent.executor.handle_reflect") as mock_handler:
+            mock_handler.return_value = "A mindful response about anger."
+            await executor.execute(ctx2, queue2)
+            mock_handler.assert_awaited_once()
+            call_kwargs = mock_handler.call_args
+            passed_history = call_kwargs.kwargs.get("history") or call_kwargs[1].get("history")
+            assert passed_history is not None
+            assert len(passed_history) == 2  # from message 1
+
+    @pytest.mark.asyncio
+    async def test_different_contexts_isolated(self):
+        """Different context_ids produce independent conversation histories."""
+        store = InMemoryConversationStore()
+        executor = _make_executor(store=store)
+
+        # Session A
+        ctx_a = make_request_context("Explain the trainings", context_id="session-a")
+        await executor.execute(ctx_a, EventQueue())
+
+        # Session B
+        ctx_b = make_request_context("I feel lost", context_id="session-b")
+        await executor.execute(ctx_b, EventQueue())
+
+        history_a = await store.get_history("session-a")
+        history_b = await store.get_history("session-b")
+
+        assert len(history_a) == 2  # user + assistant
+        assert len(history_b) == 2
+        assert "trainings" in history_a[0].content.lower()
+        assert "lost" in history_b[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_error_not_recorded_in_history(self):
+        """When the skill handler raises, the error is NOT stored as a turn."""
+        client = AsyncMock()
+        client.messages.create = AsyncMock(side_effect=RuntimeError("boom"))
+        store = InMemoryConversationStore()
+        executor = _make_executor(client=client, store=store)
+
+        ctx = make_request_context("Explain the trainings", context_id="err-session")
+        await executor.execute(ctx, EventQueue())
+
+        history = await store.get_history("err-session")
+        # Only the user turn should be recorded, not an error "assistant" turn
+        assert len(history) == 1
+        assert history[0].role == "user"
