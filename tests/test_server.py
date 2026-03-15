@@ -16,7 +16,7 @@ from dharma_agent.executor import DharmaAgentExecutor
 def app():
     """Build a test Starlette app with no Anthropic client (fallback mode)."""
     with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
-        agent_card = build_agent_card(host="localhost", port=9999)
+        agent_card = build_agent_card(url="http://localhost:9999/")
         executor = DharmaAgentExecutor()
         handler = DefaultRequestHandler(
             agent_executor=executor,

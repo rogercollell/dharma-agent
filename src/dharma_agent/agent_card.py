@@ -52,7 +52,7 @@ guide_skill = AgentSkill(
 )
 
 
-def build_agent_card(host: str = "0.0.0.0", port: int = 9999) -> AgentCard:
+def build_agent_card(url: str = "http://0.0.0.0:9999/") -> AgentCard:
     """Build the Agent Card for Dharma Agent."""
     return AgentCard(
         name="Dharma Agent",
@@ -61,7 +61,7 @@ def build_agent_card(host: str = "0.0.0.0", port: int = 9999) -> AgentCard:
             "teachings, reflections, and mindful guidance to humans and AI "
             "agents alike."
         ),
-        url=f"http://{host}:{port}/",
+        url=url,
         version="0.1.0",
         defaultInputModes=["text"],
         defaultOutputModes=["text"],
