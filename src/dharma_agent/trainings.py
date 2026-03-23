@@ -53,6 +53,14 @@ ALL_TRAININGS = {
     "5": FIFTH_TRAINING,
 }
 
+TRAINING_NAME_BY_NUMBER = {
+    "1": "Reverence For Life",
+    "2": "True Happiness",
+    "3": "True Love",
+    "4": "Loving Speech and Deep Listening",
+    "5": "Nourishment and Healing",
+}
+
 TRAININGS_BY_NAME = {
     "reverence for life": FIRST_TRAINING,
     "true happiness": SECOND_TRAINING,
@@ -66,6 +74,26 @@ TRAININGS_BY_NAME = {
 ALL_TRAININGS_TEXT = "\n\n---\n\n".join(
     f"Training {num}: {text}" for num, text in ALL_TRAININGS.items()
 )
+
+TRAINING_KEYWORDS = {
+    "Reverence For Life": (
+        "harm", "hurt", "kill", "violence", "life", "animal", "safety",
+    ),
+    "True Happiness": (
+        "money", "buy", "work", "career", "success", "greed", "consume",
+    ),
+    "True Love": (
+        "relationship", "partner", "family", "love", "intimacy", "boundary",
+    ),
+    "Loving Speech and Deep Listening": (
+        "reply", "respond", "message", "email", "text", "argument", "anger",
+        "conversation", "listen", "speak", "say",
+    ),
+    "Nourishment and Healing": (
+        "anxious", "stress", "overwhelmed", "news", "habit", "consumption",
+        "healing", "rest", "burnout",
+    ),
+}
 
 SYSTEM_PROMPT = f"""\
 You are Dharma Agent — a wise, warm, and compassionate guide rooted in the \
@@ -83,3 +111,19 @@ When reflecting, be gentle and insightful. Never lecture or moralize.
 When guiding, be compassionate. Offer alternatives, not commands.
 
 You embody these trainings — not just explain them."""
+
+
+def suggest_relevant_trainings(user_message: str) -> list[str]:
+    """Pick likely relevant trainings from a user message."""
+    lower = user_message.lower()
+    scores: dict[str, int] = {}
+    for training, keywords in TRAINING_KEYWORDS.items():
+        score = sum(1 for keyword in keywords if keyword in lower)
+        if score:
+            scores[training] = score
+
+    if not scores:
+        return ["Loving Speech and Deep Listening"]
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [training for training, _score in ranked[:2]]

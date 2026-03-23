@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dharma_agent.conversation import Turn, build_messages
+from dharma_agent.contracts import WisdomResult
+from dharma_agent.conversation import Turn
+from dharma_agent.memory.pattern_store import InterventionPattern
+from dharma_agent.memory.profile_store import UserProfile
+from dharma_agent.skills.common import complete_wisdom_result
 from dharma_agent.trainings import (
     ALL_TRAININGS_TEXT,
-    SYSTEM_PROMPT,
     TRAININGS_BY_NAME,
     ALL_TRAININGS,
+    TRAINING_NAME_BY_NUMBER,
 )
 
 if TYPE_CHECKING:
@@ -30,24 +34,46 @@ brief examples of how the training applies to common situations.
 Keep your response focused and not too long — teach with care, not volume."""
 
 
-def _fallback_teach(user_message: str) -> str:
-    """Return the training text directly when no LLM is available."""
+def _fallback_teach(user_message: str) -> WisdomResult:
+    """Return a structured teaching response when no LLM is available."""
     lower = user_message.lower()
 
     # Check for a specific training by number
     for num, text in ALL_TRAININGS.items():
         if f"training {num}" in lower or f"#{num}" in lower:
-            return f"Here is the {_ordinal(num)} Mindfulness Training:\n\n{text}"
+            training_name = TRAINING_NAME_BY_NUMBER[num]
+            return WisdomResult(
+                acknowledgement=f"Here is the {_ordinal(num)} Mindfulness Training.",
+                insight=text,
+                relevant_trainings=[training_name],
+                next_step="Take one sentence from this training and ask where it touches your daily life right now.",
+                practice="Read it once slowly, then notice which line creates the most resistance or relief.",
+                follow_up_question="Do you want the core meaning in simpler everyday language too?",
+            )
 
     # Check for a specific training by name
     for name, text in TRAININGS_BY_NAME.items():
         if name in lower:
-            return f"Here is the training on {name.title()}:\n\n{text}"
+            return WisdomResult(
+                acknowledgement=f"Here is the training on {name.title()}.",
+                insight=text,
+                relevant_trainings=[name.title()],
+                next_step="Notice one place this training asks for a smaller, more concrete shift in daily life.",
+                practice="Take one breath after each paragraph and let the language land before judging it.",
+                follow_up_question="Do you want an example of how this could look in ordinary life?",
+            )
 
     # Default: return all five
-    return (
-        "Here are the Five Mindfulness Trainings, from the tradition of "
-        "Thich Nhat Hanh:\n\n" + ALL_TRAININGS_TEXT
+    return WisdomResult(
+        acknowledgement=(
+            "Here are the Five Mindfulness Trainings, from the tradition of "
+            "Thich Nhat Hanh."
+        ),
+        insight=ALL_TRAININGS_TEXT,
+        relevant_trainings=list(TRAINING_NAME_BY_NUMBER.values()),
+        next_step="Choose the one training that feels most alive in your life right now before trying to hold all five at once.",
+        practice="Read the titles only first, then notice which one your attention returns to.",
+        follow_up_question="Do you want a plain-language summary of the one that stands out most?",
     )
 
 
@@ -60,15 +86,17 @@ async def handle_teach(
     user_message: str,
     client: anthropic.AsyncAnthropic | None,
     history: list[Turn] | None = None,
-) -> str:
+    profile: UserProfile | None = None,
+    patterns: list[InterventionPattern] | None = None,
+) -> WisdomResult:
     """Generate a teaching response about the Five Mindfulness Trainings."""
-    if client is None:
-        return _fallback_teach(user_message)
-
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=f"{SYSTEM_PROMPT}\n\n{TEACH_INSTRUCTION}",
-        messages=build_messages(history, user_message),
+    fallback = _fallback_teach(user_message)
+    return await complete_wisdom_result(
+        user_message=user_message,
+        client=client,
+        history=history,
+        instruction=TEACH_INSTRUCTION,
+        fallback=fallback,
+        profile=profile,
+        patterns=patterns,
     )
-    return response.content[0].text

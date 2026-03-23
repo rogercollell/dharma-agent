@@ -21,10 +21,10 @@ teach_skill = AgentSkill(
 
 reflect_skill = AgentSkill(
     id="reflect",
-    name="Reflect through the lens of the Trainings",
+    name="Reflect and clarify",
     description=(
         "Reflect on a situation, feeling, or challenge through the lens of "
-        "the Five Mindfulness Trainings. Offers gentle perspective without judgment."
+        "the Five Mindfulness Trainings and surface one clear next step."
     ),
     tags=["mindfulness", "reflection", "ethics", "decision-making"],
     examples=[
@@ -35,19 +35,34 @@ reflect_skill = AgentSkill(
     ],
 )
 
-guide_skill = AgentSkill(
-    id="guide",
-    name="Mindful guidance for actions",
+respond_skill = AgentSkill(
+    id="respond",
+    name="Craft a wiser reply",
     description=(
-        "Evaluate a proposed action or behavior and suggest a more mindful "
-        "alternative if appropriate. Compassionate, never preachy."
+        "Help draft a reply that is honest, calm, and less likely to escalate."
     ),
-    tags=["mindfulness", "guidance", "behavior", "compassion"],
+    tags=["mindfulness", "communication", "drafting", "compassion"],
     examples=[
-        "I want to send an angry email to my boss",
-        "Should I buy this product?",
-        "I'm thinking of cutting someone out of my life",
-        "How can I respond to this hurtful comment?",
+        "Help me reply to this message without escalating",
+        "Draft a kinder response to my coworker",
+        "I need to answer this email firmly but calmly",
+        "Rewrite this text so it stays honest and respectful",
+    ],
+)
+
+review_skill = AgentSkill(
+    id="review",
+    name="Review for likely harm",
+    description=(
+        "Review a proposed action, draft, or piece of advice for likely harm, "
+        "coldness, manipulation, or unnecessary escalation."
+    ),
+    tags=["mindfulness", "review", "ethics", "communication"],
+    examples=[
+        "Review this message before I send it",
+        "Does this sound too harsh?",
+        "What harm could this advice cause?",
+        "Should I send this angry email to my boss?",
     ],
 )
 
@@ -66,5 +81,5 @@ def build_agent_card(url: str = "http://0.0.0.0:9999/") -> AgentCard:
         defaultInputModes=["text"],
         defaultOutputModes=["text"],
         capabilities=AgentCapabilities(streaming=True),
-        skills=[teach_skill, reflect_skill, guide_skill],
+        skills=[teach_skill, reflect_skill, respond_skill, review_skill],
     )
