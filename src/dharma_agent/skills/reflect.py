@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dharma_agent.conversation import Turn, build_messages
-from dharma_agent.trainings import ALL_TRAININGS_TEXT, SYSTEM_PROMPT
+from dharma_agent.contracts import WisdomResult
+from dharma_agent.conversation import Turn
+from dharma_agent.memory.pattern_store import InterventionPattern
+from dharma_agent.memory.profile_store import UserProfile
+from dharma_agent.skills.common import complete_wisdom_result
+from dharma_agent.trainings import suggest_relevant_trainings
 
 if TYPE_CHECKING:
     import anthropic
@@ -27,31 +31,37 @@ Structure your response around:
 Keep it personal and warm, not academic."""
 
 
-FALLBACK_REFLECT = """\
-Thank you for sharing. The Five Mindfulness Trainings invite us to look \
-deeply into our experience with compassion and without judgment.
-
-Here are the trainings — consider which ones speak to your situation:
-
-{trainings}
-
-Take a moment to breathe and sit with whichever training resonates most. \
-There is no rush."""
-
-
 async def handle_reflect(
     user_message: str,
     client: anthropic.AsyncAnthropic | None,
     history: list[Turn] | None = None,
-) -> str:
+    profile: UserProfile | None = None,
+    patterns: list[InterventionPattern] | None = None,
+) -> WisdomResult:
     """Reflect on a situation through the Five Mindfulness Trainings."""
-    if client is None:
-        return FALLBACK_REFLECT.format(trainings=ALL_TRAININGS_TEXT)
-
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=f"{SYSTEM_PROMPT}\n\n{REFLECT_INSTRUCTION}",
-        messages=build_messages(history, user_message),
+    trainings = suggest_relevant_trainings(user_message)
+    fallback = WisdomResult(
+        acknowledgement="Thank you for sharing what is happening.",
+        insight=(
+            "The trainings invite us to slow down enough to see the feeling, "
+            "the story we are telling about it, and the next action we are "
+            "leaning toward."
+        ),
+        relevant_trainings=trainings,
+        next_step="Name the strongest feeling in one plain sentence before trying to solve everything at once.",
+        practice=(
+            profile.helpful_practices[0]
+            if profile and profile.helpful_practices
+            else "Take three quiet breaths and notice where this lands in the body."
+        ),
+        follow_up_question="What feels most alive right now: hurt, fear, anger, grief, or confusion?",
     )
-    return response.content[0].text
+    return await complete_wisdom_result(
+        user_message=user_message,
+        client=client,
+        history=history,
+        instruction=REFLECT_INSTRUCTION,
+        fallback=fallback,
+        profile=profile,
+        patterns=patterns,
+    )

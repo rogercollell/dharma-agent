@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dharma_agent.conversation import Turn, build_messages
-from dharma_agent.trainings import ALL_TRAININGS_TEXT, SYSTEM_PROMPT
+from dharma_agent.conversation import Turn
+from dharma_agent.contracts import WisdomResult
+from dharma_agent.memory.pattern_store import InterventionPattern
+from dharma_agent.memory.profile_store import UserProfile
+from dharma_agent.skills.review import handle_review
 
 if TYPE_CHECKING:
     import anthropic
@@ -28,30 +31,18 @@ Structure your response around:
 2. Gently explore how the trainings relate to it
 3. If helpful, offer a more mindful alternative or reframe"""
 
-
-FALLBACK_GUIDE = """\
-Before acting, you might consider how the Five Mindfulness Trainings relate \
-to this situation:
-
-{trainings}
-
-The trainings are not rules — they are invitations to look deeply. Whatever \
-you choose, may it come from a place of compassion and clarity."""
-
-
 async def handle_guide(
     user_message: str,
     client: anthropic.AsyncAnthropic | None,
     history: list[Turn] | None = None,
-) -> str:
-    """Offer mindful guidance on a proposed action."""
-    if client is None:
-        return FALLBACK_GUIDE.format(trainings=ALL_TRAININGS_TEXT)
-
-    response = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=f"{SYSTEM_PROMPT}\n\n{GUIDE_INSTRUCTION}",
-        messages=build_messages(history, user_message),
+    profile: UserProfile | None = None,
+    patterns: list[InterventionPattern] | None = None,
+) -> WisdomResult:
+    """Compatibility wrapper that delegates guide requests to review."""
+    return await handle_review(
+        user_message=user_message,
+        client=client,
+        history=history,
+        profile=profile,
+        patterns=patterns,
     )
-    return response.content[0].text

@@ -46,11 +46,12 @@ class TestAgentCard:
             data = resp.json()
             assert data["name"] == "Dharma Agent"
             assert data["capabilities"]["streaming"] is True
-            assert len(data["skills"]) == 3
+            assert len(data["skills"]) == 4
             skill_ids = [s["id"] for s in data["skills"]]
             assert "teach" in skill_ids
             assert "reflect" in skill_ids
-            assert "guide" in skill_ids
+            assert "respond" in skill_ids
+            assert "review" in skill_ids
 
 
 # ---------------------------------------------------------------------------

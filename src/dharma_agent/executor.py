@@ -12,14 +12,25 @@ from a2a.server.events import EventQueue
 from a2a.types import TaskState, TaskStatus, TaskStatusUpdateEvent
 from a2a.utils import new_agent_text_message
 
+from dharma_agent.contracts import coerce_wisdom_result
 from dharma_agent.conversation import (
     ConversationStore,
     InMemoryConversationStore,
     Turn,
 )
+from dharma_agent.distill import (
+    build_outcome_result,
+    detect_outcome_signal,
+    record_outcome,
+)
+from dharma_agent.memory.pattern_store import InMemoryPatternStore, PatternStore
+from dharma_agent.memory.profile_store import InMemoryProfileStore, ProfileStore
+from dharma_agent.rendering import render_wisdom_result
 from dharma_agent.skills.teach import handle_teach
 from dharma_agent.skills.reflect import handle_reflect
 from dharma_agent.skills.guide import handle_guide
+from dharma_agent.skills.respond import handle_respond
+from dharma_agent.skills.review import handle_review
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +45,14 @@ GUIDE_KEYWORDS = {
     "is it ok", "is it okay", "would it be", "can i", "help me decide",
     "what should", "guide",
 }
+RESPOND_KEYWORDS = {
+    "reply", "respond", "draft", "rewrite", "text back", "email back",
+    "write back", "what should i say",
+}
+REVIEW_KEYWORDS = {
+    "review", "check this", "look over", "is this too harsh",
+    "is this okay to send", "what harm", "should i send",
+}
 
 
 def _detect_skill(user_input: str) -> str:
@@ -43,13 +62,27 @@ def _detect_skill(user_input: str) -> str:
     """
     lower = user_input.lower()
 
+    if lower.startswith("review:"):
+        return "review"
+
+    if lower.startswith("respond:"):
+        return "respond"
+
     for keyword in TEACH_KEYWORDS:
         if keyword in lower:
             return "teach"
 
+    for keyword in REVIEW_KEYWORDS:
+        if keyword in lower:
+            return "review"
+
+    for keyword in RESPOND_KEYWORDS:
+        if keyword in lower:
+            return "respond"
+
     for keyword in GUIDE_KEYWORDS:
         if keyword in lower:
-            return "guide"
+            return "review"
 
     # Default: reflect is the most versatile and compassionate response
     return "reflect"
@@ -66,9 +99,16 @@ def _build_client():
 class DharmaAgentExecutor(AgentExecutor):
     """Routes incoming A2A requests to the appropriate mindfulness skill."""
 
-    def __init__(self, store: ConversationStore | None = None) -> None:
+    def __init__(
+        self,
+        store: ConversationStore | None = None,
+        profile_store: ProfileStore | None = None,
+        pattern_store: PatternStore | None = None,
+    ) -> None:
         self._client = _build_client()
         self._store = store or InMemoryConversationStore()
+        self._profile_store = profile_store or InMemoryProfileStore()
+        self._pattern_store = pattern_store or InMemoryPatternStore()
         if self._client is None:
             print("  (no ANTHROPIC_API_KEY found — running in fallback mode)")
 
@@ -104,7 +144,7 @@ class DharmaAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(
                 new_agent_text_message(
                     "I'm here whenever you're ready. "
-                    "You can ask me to teach, reflect, or guide — "
+                    "You can ask me to teach, reflect, review, or help draft a response — "
                     "all rooted in the Five Mindfulness Trainings."
                 )
             )
@@ -121,6 +161,50 @@ class DharmaAgentExecutor(AgentExecutor):
         # Load conversation history and record the user's turn
         history = await self._store.get_history(session_id)
         await self._store.add_turn(session_id, Turn("user", user_input))
+
+        outcome_signal = detect_outcome_signal(user_input)
+        if outcome_signal:
+            last_assistant_turn = _latest_structured_assistant_turn(history)
+            if last_assistant_turn is not None:
+                await record_outcome(
+                    memory_id=session_id,
+                    signal=outcome_signal,
+                    last_assistant_turn=last_assistant_turn,
+                    profile_store=self._get_profile_store(),
+                    pattern_store=self._get_pattern_store(),
+                )
+                result = build_outcome_result(outcome_signal)
+                rendered = render_wisdom_result(result)
+                await self._store.add_turn(
+                    session_id,
+                    Turn(
+                        "assistant",
+                        rendered,
+                        kind="outcome",
+                        metadata={
+                            "skill_id": "outcome",
+                            "result": result.to_dict(),
+                        },
+                    ),
+                )
+                await event_queue.enqueue_event(
+                    TaskStatusUpdateEvent(
+                        task_id=context.task_id or "",
+                        context_id=session_id,
+                        final=False,
+                        status=TaskStatus(state=TaskState.working),
+                    )
+                )
+                await event_queue.enqueue_event(new_agent_text_message(rendered))
+                await event_queue.enqueue_event(
+                    TaskStatusUpdateEvent(
+                        task_id=context.task_id or "",
+                        context_id=session_id,
+                        final=True,
+                        status=TaskStatus(state=TaskState.completed),
+                    )
+                )
+                return
 
         # Signal that processing has started
         await event_queue.enqueue_event(
@@ -139,11 +223,21 @@ class DharmaAgentExecutor(AgentExecutor):
             "teach": handle_teach,
             "reflect": handle_reflect,
             "guide": handle_guide,
+            "respond": handle_respond,
+            "review": handle_review,
         }
         handler = handlers[skill_id]
 
         try:
-            result = await handler(user_input, self._client, history=history)
+            profile = await self._get_profile_store().get(session_id)
+            patterns = await self._get_pattern_store().list_for_memory(session_id)
+            raw_result = await handler(
+                user_input,
+                self._client,
+                history=history,
+                profile=profile,
+                patterns=patterns,
+            )
         except Exception as exc:
             # Import anthropic only when we need to check error types
             try:
@@ -190,10 +284,23 @@ class DharmaAgentExecutor(AgentExecutor):
                 )
             return
 
-        # Record the assistant's response in conversation history
-        await self._store.add_turn(session_id, Turn("assistant", result))
+        result = coerce_wisdom_result(raw_result, skill_id=skill_id)
+        rendered = render_wisdom_result(result)
 
-        await event_queue.enqueue_event(new_agent_text_message(result))
+        # Record the assistant's response in conversation history
+        await self._store.add_turn(
+            session_id,
+            Turn(
+                "assistant",
+                rendered,
+                metadata={
+                    "skill_id": skill_id,
+                    "result": result.to_dict(),
+                },
+            ),
+        )
+
+        await event_queue.enqueue_event(new_agent_text_message(rendered))
 
         # Signal completion
         await event_queue.enqueue_event(
@@ -204,6 +311,16 @@ class DharmaAgentExecutor(AgentExecutor):
                 status=TaskStatus(state=TaskState.completed),
             )
         )
+
+    def _get_profile_store(self) -> ProfileStore:
+        if not hasattr(self, "_profile_store"):
+            self._profile_store = InMemoryProfileStore()
+        return self._profile_store
+
+    def _get_pattern_store(self) -> PatternStore:
+        if not hasattr(self, "_pattern_store"):
+            self._pattern_store = InMemoryPatternStore()
+        return self._pattern_store
 
     @override
     async def cancel(
@@ -225,3 +342,11 @@ class DharmaAgentExecutor(AgentExecutor):
                 ),
             )
         )
+
+
+def _latest_structured_assistant_turn(history: list[Turn]) -> Turn | None:
+    """Return the latest assistant turn carrying structured result metadata."""
+    for turn in reversed(history):
+        if turn.role == "assistant" and turn.metadata.get("result"):
+            return turn
+    return None
